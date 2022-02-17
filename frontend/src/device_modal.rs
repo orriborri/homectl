@@ -19,7 +19,20 @@ pub struct DeviceModalProps<'a> {
 pub fn DeviceModal<'a>(cx: Scope<'a, DeviceModalProps<'a>>) -> Element<'a> {
     let ws = use_ws_context(&cx);
 
+    let show_hsv = if let Some(c) = &cx.props.device.capabilities {
+        c.hsv
+    } else {
+        false
+    };
+    let show_cct =  if let Some(c) = &cx.props.device.capabilities {
+            c.cct
+    } else {
+            false
+    };
     let (show_debug, _set_show_debug) = use_state(&cx, || false);
+    let (show_brightness,set_show_brightness) = use_state(&cx,|| show_hsv ||show_cct );
+
+    //let (show_hsv, set_show_hsv) = use_state(&cx, c.hsv );
     // let toggle_debug = move |_: MouseEvent| {
     //     let mut show_debug = show_debug.modify();
     //     *show_debug = !*show_debug;
@@ -116,10 +129,6 @@ pub fn DeviceModal<'a>(cx: Scope<'a, DeviceModalProps<'a>>) -> Element<'a> {
         }
     };
 
-    let set_brightness = {
-        let ws = ws.clone();
-        move |evt: FormEvent| {
-            let value: Option<f32> = evt.data.value.parse().ok();
 
             if let Some(value) = value {
                 let mut device = cx.props.device.clone();
@@ -204,6 +213,8 @@ pub fn DeviceModal<'a>(cx: Scope<'a, DeviceModalProps<'a>>) -> Element<'a> {
                         value: "{saturation}",
                         onchange: set_saturation
                     }
+                })
+                show_brightness.then(|| rsx!{
 
                     "Brightness:",
                     style {
@@ -242,7 +253,6 @@ pub fn DeviceModal<'a>(cx: Scope<'a, DeviceModalProps<'a>>) -> Element<'a> {
                         value: "{cct}",
                         onchange: set_cct
                     }
-                }
 
                 show_debug.then(|| rsx! {
                     div {
