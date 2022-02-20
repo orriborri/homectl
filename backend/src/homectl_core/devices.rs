@@ -1,10 +1,9 @@
 use crate::db::actions::{db_find_device, db_update_device};
 
 use super::scenes::Scenes;
-use async_std::task;
 use homectl_types::device::DeviceId;
 use homectl_types::{
-    device::{Device, DeviceColor, DeviceSceneState, DeviceState, DeviceStateKey, DevicesState},
+    device::{Device, DeviceColor, DeviceKey, DeviceSceneState, DeviceState, DevicesState},
     event::{Message, TxEventChannel},
     integration::IntegrationId,
     scene::{SceneDescriptor, SceneDevicesConfig, SceneId},
@@ -122,7 +121,7 @@ impl Devices {
     /// Checks whether device values were changed or not due to refresh
     pub async fn handle_integration_device_refresh(&mut self, device: &Device) {
         // println!("handle_integration_device_refresh {:?}", device);
-        let state_device = self.get_device(&device.get_state_key());
+        let state_device = self.get_device(&device.get_device_key());
 
         // recompute expected_state here as it may have changed since we last
         // computed it
@@ -137,7 +136,7 @@ impl Devices {
             match (kind, state_device, expected_state) {
                 // Device was seen for the first time
                 (_, None, _) => {
-                    let db_device = db_find_device(&device.get_state_key()).await.ok();
+                    let db_device = db_find_device(&device.get_device_key()).await.ok();
 
                     match db_device {
                         Some(db_device) => {
@@ -223,7 +222,7 @@ impl Devices {
                     } else {
                         let device = state
                             .0
-                            .get(&device.get_state_key())
+                            .get(&device.get_device_key())
                             .unwrap_or(device)
                             .clone();
 
@@ -242,7 +241,7 @@ impl Devices {
         skip_db: bool,
         skip_integration: bool,
     ) -> Device {
-        let old: Option<Device> = self.get_device(&device.get_state_key());
+        let old: Option<Device> = self.get_device(&device.get_device_key());
         let old_states = { self.state.lock().unwrap().clone() };
 
         let mut device = device.clone();
@@ -258,7 +257,7 @@ impl Devices {
 
         let mut states = self.state.lock().unwrap();
 
-        states.0.insert(device.get_state_key(), device.clone());
+        states.0.insert(device.get_device_key(), device.clone());
 
         let state_changed = old.as_ref() != Some(&device);
 
@@ -272,7 +271,7 @@ impl Devices {
         if state_changed && !skip_db {
             // FIXME: compiler error without task::spawn()
             let device = device.clone();
-            task::spawn(async move {
+            tokio::spawn(async move {
                 db_update_device(&device).await.ok();
             });
         }
@@ -287,8 +286,8 @@ impl Devices {
         device
     }
 
-    pub fn get_device(&self, state_key: &DeviceStateKey) -> Option<Device> {
-        self.state.lock().unwrap().0.get(state_key).cloned()
+    pub fn get_device(&self, device_key: &DeviceKey) -> Option<Device> {
+        self.state.lock().unwrap().0.get(device_key).cloned()
     }
 
     fn find_scene_devices_config(&self, scene_id: &SceneId) -> Option<SceneDevicesConfig> {
@@ -296,7 +295,11 @@ impl Devices {
             .find_scene_devices_config(&*self.state.lock().unwrap(), scene_id)
     }
 
-    pub async fn activate_scene(&mut self, scene_id: &SceneId) -> Option<bool> {
+    pub async fn activate_scene(
+        &mut self,
+        scene_id: &SceneId,
+        device_keys: &Option<Vec<DeviceKey>>,
+    ) -> Option<bool> {
         println!("Activating scene {:?}", scene_id);
 
         let scene_devices_config = self.find_scene_devices_config(scene_id)?;
@@ -305,8 +308,16 @@ impl Devices {
 
         for (integration_id, devices) in scene_devices_config {
             for (device_id, _) in devices {
-                let device =
-                    self.get_device(&DeviceStateKey::new(integration_id.clone(), device_id));
+                let device_key = &DeviceKey::new(integration_id.clone(), device_id);
+
+                // Skip this device if it's not in device_keys
+                if let Some(device_keys) = device_keys {
+                    if !device_keys.contains(device_key) {
+                        continue;
+                    }
+                }
+
+                let device = self.get_device(device_key);
 
                 if let Some(device) = device {
                     let mut device = device.clone();
@@ -403,7 +414,8 @@ impl Devices {
             None => scene_descriptors.first(),
         }?;
 
-        self.activate_scene(&next_scene.scene_id).await;
+        self.activate_scene(&next_scene.scene_id, &next_scene.device_keys)
+            .await;
 
         Some(true)
     }
@@ -420,7 +432,7 @@ pub fn find_device(
         .iter()
         .find(
             |(
-                DeviceStateKey {
+                DeviceKey {
                     integration_id: candidate_integration_id,
                     device_id: candidate_device_id,
                 },
